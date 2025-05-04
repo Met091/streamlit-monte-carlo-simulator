@@ -8,13 +8,15 @@ import logging # Import logging module
 import traceback # To log tracebacks
 
 # --- Logging Configuration ---
-# Configure basic logging to capture info level messages
+# Configure basic logging to capture info level messages and above
+# Logs will go to standard error, which Streamlit Cloud captures
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', # Added logger name
     datefmt='%Y-%m-%d %H:%M:%S'
 )
-logger = logging.getLogger(__name__)
+# Get the logger for this module
+logger = logging.getLogger(__name__) # Use module name for clarity in logs
 
 # --- Configuration ---
 # Default parameters for the simulation if not provided by the user
@@ -75,7 +77,8 @@ class MonteCarloSimulator:
                     total_months > 0,
                     n_simulations > 0]):
             error_msg = "Invalid simulation parameters. Check ranges and positivity."
-            logger.error(error_msg + f" Values: initial_balance={initial_balance}, risk%={risk_percentage}, win_rate%={win_rate}, R:R={risk_reward_ratio}, trades/mo={trades_per_month}, months={total_months}, sims={n_simulations}")
+            # Log the error with details for backend debugging
+            logger.error(f"Initialization failed: {error_msg} Values: initial_balance={initial_balance}, risk%={risk_percentage}, win_rate%={win_rate}, R:R={risk_reward_ratio}, trades/mo={trades_per_month}, months={total_months}, sims={n_simulations}")
             raise ValueError(error_msg) # Raise error to stop execution
 
         # Initialize results dictionary
@@ -206,6 +209,7 @@ class MonteCarloSimulator:
         Runs the full suite of Monte Carlo simulations.
         Generates trade outcomes, calculates paths, and analyzes results.
         Uses Streamlit progress bar for user feedback.
+        Logs errors with tracebacks for backend visibility.
         """
         logger.info(f"Starting Monte Carlo simulation: {self.n_simulations} paths, {self.total_trades} trades each.")
         # Initialize Streamlit progress bar
@@ -214,6 +218,7 @@ class MonteCarloSimulator:
         try:
             # Generate all trade outcomes efficiently using NumPy
             # Creates a 2D array: (n_simulations x total_trades) of booleans (True=Win, False=Loss)
+            logger.debug("Generating trade outcomes array...")
             all_trade_outcomes_np = np.random.rand(self.n_simulations, self.total_trades) < self.win_rate_decimal
             logger.info("Trade outcomes generated.")
             st_progress_bar.progress(0.05, text="Simulating paths...") # Update progress
@@ -223,6 +228,7 @@ class MonteCarloSimulator:
             all_monthly_balances_list = [] # List to store monthly balance history for each path
 
             # Loop through each simulation path
+            logger.debug(f"Starting simulation loop for {self.n_simulations} paths...")
             for i in range(self.n_simulations):
                 # Get the trade outcomes for the current path
                 trade_outcomes_for_path = all_trade_outcomes_np[i]
@@ -235,19 +241,20 @@ class MonteCarloSimulator:
 
                 # Update progress bar periodically to avoid slowing down
                 update_frequency = max(1, self.n_simulations // 20) # Update roughly 20 times
-                if (i + 1) % update_frequency == 0:
+                if (i + 1) % update_frequency == 0 or i == self.n_simulations - 1:
                     progress = 0.05 + 0.90 * ((i + 1) / self.n_simulations) # Scale progress between 5% and 95%
                     st_progress_bar.progress(progress, text=f"Simulating paths... ({i+1}/{self.n_simulations})")
-
             logger.info("All simulation paths calculated.")
             st_progress_bar.progress(0.95, text="Analyzing results...") # Update progress
 
             # Analyze the results across all simulations
+            logger.debug("Analyzing simulation results (median, best, worst)...")
             best_case_index = np.argmax(final_balances) # Index of the path with the highest final balance
             worst_case_index = np.argmin(final_balances) # Index of the path with the lowest final balance
             median_final_balance = np.median(final_balances) # The 50th percentile final balance
             # Find the index of the path closest to the median final balance
             median_case_index = np.abs(final_balances - median_final_balance).argmin()
+            logger.debug("Result analysis complete.")
 
             # Store all calculated results in the instance's results dictionary
             self.results = {
@@ -265,10 +272,11 @@ class MonteCarloSimulator:
             st_progress_bar.progress(1.0, text="Analysis complete.") # Final progress update
 
         except Exception as e:
-            # Log any errors that occur during the simulation
-            logger.error(f"Error during simulation run: {e}", exc_info=True) # Log traceback
-            st_progress_bar.progress(1.0, text="Simulation failed.") # Update progress bar status
-            raise e # Re-raise the exception to be caught by the main app logic
+            # Log the error with traceback for backend debugging (Streamlit Cloud logs)
+            logger.error(f"Error during simulation run execution: {e}", exc_info=True)
+            st_progress_bar.progress(1.0, text="Simulation failed!") # Update progress bar status
+            # Re-raise the exception to be caught by the main app logic for UI feedback
+            raise e
 
     def get_results_summary(self) -> Optional[Dict[str, float]]:
         """
@@ -282,15 +290,22 @@ class MonteCarloSimulator:
             logger.warning("Attempted to get results summary, but simulation results are empty.")
             return None
         # Extract key summary statistics from the stored results
-        return {
-            "Median Final Balance": self.results["median_final_balance"],
-            "Best Final Balance": self.results["best_final_balance"],
-            "Worst Final Balance": self.results["worst_final_balance"]
+        summary_data = {
+            "Median Final Balance": self.results.get("median_final_balance"),
+            "Best Final Balance": self.results.get("best_final_balance"),
+            "Worst Final Balance": self.results.get("worst_final_balance")
         }
+        # Check if any essential key is missing (shouldn't happen if run_simulations succeeded)
+        if None in summary_data.values():
+             logger.error(f"Results summary is missing data: {summary_data}")
+             return None
+        return summary_data
+
 
     def get_path_details(self, path_index: int) -> Optional[Dict[str, Any]]:
         """
         Calculates and returns detailed metrics for a specific simulation path identified by its index.
+        Logs errors with tracebacks.
 
         Args:
             path_index (int): The index of the simulation path to analyze (0 to n_simulations-1).
@@ -298,11 +313,14 @@ class MonteCarloSimulator:
         Returns:
             Optional[Dict[str, Any]]: A dictionary containing detailed metrics for the path (final balance,
                                       return, drawdown, win rate, streaks, monthly curve), or None if index is invalid
-                                      or results are missing.
+                                      or results are missing/calculation fails.
         """
         # Validate path_index and check if results are available
-        if not self.results or path_index < 0 or path_index >= self.n_simulations:
-            logger.warning(f"Attempted to get details for invalid path index: {path_index} or results missing.")
+        if not self.results or "all_trade_outcomes" not in self.results or "all_monthly_balances" not in self.results:
+             logger.warning(f"Attempted to get details for path {path_index}, but results dictionary is incomplete.")
+             return None
+        if path_index < 0 or path_index >= self.n_simulations:
+            logger.warning(f"Attempted to get details for invalid path index: {path_index}")
             return None
 
         logger.info(f"Calculating details for path index: {path_index}")
@@ -310,6 +328,12 @@ class MonteCarloSimulator:
             # Retrieve necessary data for the specified path
             path_outcomes = self.results["all_trade_outcomes"][path_index]
             path_curve = self.results["all_monthly_balances"][path_index] # List of monthly balances
+
+            # Check if retrieved data is valid
+            if not isinstance(path_curve, list) or len(path_curve) == 0:
+                logger.error(f"Invalid path curve data for index {path_index}: {path_curve}")
+                return None
+
             path_curve_np = np.array(path_curve) # Convert to NumPy array for calculations
 
             # Calculate metrics for this path
@@ -333,15 +357,19 @@ class MonteCarloSimulator:
             }
             logger.info(f"Successfully calculated details for path index: {path_index}")
             return details
+        except IndexError:
+            logger.error(f"IndexError calculating details for path index {path_index}. Results structure might be incorrect.", exc_info=True)
+            return None
         except Exception as e:
-            # Log errors during detail calculation for a specific path
-            logger.error(f"Error calculating details for path index {path_index}: {e}", exc_info=True)
+            # Log errors during detail calculation for a specific path, including traceback
+            logger.error(f"Unexpected error calculating details for path index {path_index}: {e}", exc_info=True)
             return None # Return None if calculation fails
 
     def get_median_equity_curve(self) -> Optional[np.ndarray]:
         """
         Calculates the median balance across all simulations for each month.
         This provides a representative equity curve progression over time.
+        Logs errors with tracebacks.
 
         Returns:
             Optional[np.ndarray]: A NumPy array representing the median balance at each month-end
@@ -353,23 +381,28 @@ class MonteCarloSimulator:
             return None
 
         all_balances = self.results["all_monthly_balances"] # Get the list of monthly balance lists
-        if not all_balances: # Check if the list is empty
-            logger.warning("Attempted to get median equity curve, but balance list is empty.")
+        if not isinstance(all_balances, list) or len(all_balances) == 0: # Check if the list is empty or invalid
+            logger.warning(f"Attempted to get median equity curve, but 'all_monthly_balances' is not a non-empty list: {type(all_balances)}")
             return None
 
         try:
             # Convert the list of lists into a 2D NumPy array (simulations x months)
+            # Add check for consistency in inner list lengths if necessary, though padding handles some cases
             padded_balances = np.array(all_balances)
-            # Basic check for expected shape
+
+            # Basic check for expected shape (should be 2D)
             if padded_balances.ndim != 2:
-                 logger.error(f"Median curve calculation error: Expected 2D array, got {padded_balances.ndim}D.")
+                 logger.error(f"Median curve calculation error: Expected 2D array from 'all_monthly_balances', got {padded_balances.ndim}D. Shape: {padded_balances.shape}")
                  return None
+            if padded_balances.shape[0] != self.n_simulations:
+                 logger.warning(f"Median curve calculation warning: Array shape {padded_balances.shape} doesn't match n_simulations {self.n_simulations}")
+
             # Calculate the median along the simulations axis (axis=0) for each month
             median_curve = np.median(padded_balances, axis=0)
-            logger.info("Median equity curve calculated successfully.")
+            logger.info(f"Median equity curve calculated successfully. Shape: {median_curve.shape}")
             return median_curve
         except Exception as e:
-            # Log errors during median calculation
+            # Log errors during median calculation, including traceback
             logger.error(f"Error calculating median equity curve: {e}", exc_info=True)
             return None
 
@@ -386,7 +419,6 @@ st.set_page_config(
 # Main title and branding subtitle
 st.title("Monte Carlo Simulator") # Updated title
 st.caption("Powered by Trading Mastery Hub") # Added branding subtitle
-# st.caption("Simulate potential trading outcomes based on your strategy parameters.") # Original caption commented out or removed
 
 # --- Simulation Parameters (Sidebar Inputs) ---
 # Use sidebar for input parameters
@@ -462,9 +494,9 @@ if run_button:
             logger.info("Overall summary displayed.")
         else:
              # Handle case where summary couldn't be retrieved
-             logger.error("Failed to retrieve simulation summary.")
-             summary_placeholder.error("Error: Could not retrieve simulation summary.", icon="⚠️")
-             st.stop() # Stop execution if summary fails
+             logger.error("Failed to retrieve simulation summary after successful simulation run.") # Log error
+             summary_placeholder.error("Error: Could not retrieve simulation summary. Check logs.", icon="⚠️") # User message
+             st.stop() # Stop execution if summary fails unexpectedly
 
         # --- Display Detailed Scenario Analysis ---
         with details_placeholder:
@@ -472,38 +504,47 @@ if run_button:
             try:
                 logger.info("Retrieving detailed path metrics...")
                 # Get details for best, worst, and median-example paths
-                best_details = simulator.get_path_details(simulator.results["best_case_index"])
-                worst_details = simulator.get_path_details(simulator.results["worst_case_index"])
-                median_example_details = simulator.get_path_details(simulator.results["median_case_index"])
+                # Add checks to ensure indices exist before getting details
+                best_idx = simulator.results.get("best_case_index")
+                worst_idx = simulator.results.get("worst_case_index")
+                median_idx = simulator.results.get("median_case_index")
 
-                # Check if all details were retrieved successfully
-                if not all([best_details, worst_details, median_example_details]):
-                    logger.error("Failed to retrieve one or more detailed path metrics.")
-                    st.error("Error: Could not retrieve all detailed path metrics.", icon="⚠️")
+                if best_idx is None or worst_idx is None or median_idx is None:
+                     logger.error("Could not find best/worst/median indices in simulation results.")
+                     st.error("Error: Could not identify key simulation paths (best/worst/median). Check logs.", icon="⚠️")
                 else:
-                    logger.info("Detailed path metrics retrieved successfully.")
-                    # Define scenarios to display
-                    scenarios = {
-                        "Best Case Path": best_details,
-                        "Worst Case Path": worst_details,
-                        "Median Case Path (Example)": median_example_details
-                    }
-                    # Use columns to display scenario details side-by-side
-                    cols = st.columns(len(scenarios))
-                    for i, (name, data) in enumerate(scenarios.items()):
-                        with cols[i]:
-                            st.markdown(f"**{name}**")
-                            st.markdown(f"Ending Balance: `${data['Result Balance']:,.2f}`")
-                            st.markdown(f"Total Return: `{data['Return %']:.2f}%`")
-                            st.markdown(f"Max Drawdown: `{data['Maximum Drawdown %']:.2f}%`")
-                            st.markdown(f"Actual Win Rate: `{data['Actual Win Rate %']:.2f}%`")
-                            st.markdown(f"Max Cons. Wins: `{data['Max Consecutive Wins']}`")
-                            st.markdown(f"Max Cons. Losses: `{data['Max Consecutive Losses']}`")
-                    logger.info("Detailed scenario analysis displayed.")
+                    best_details = simulator.get_path_details(best_idx)
+                    worst_details = simulator.get_path_details(worst_idx)
+                    median_example_details = simulator.get_path_details(median_idx)
+
+                    # Check if all details were retrieved successfully
+                    if not all([best_details, worst_details, median_example_details]):
+                        logger.error("Failed to retrieve one or more detailed path metrics (best, worst, or median).")
+                        st.error("Error: Could not retrieve all detailed path metrics. Check logs.", icon="⚠️")
+                    else:
+                        logger.info("Detailed path metrics retrieved successfully.")
+                        # Define scenarios to display
+                        scenarios = {
+                            "Best Case Path": best_details,
+                            "Worst Case Path": worst_details,
+                            "Median Case Path (Example)": median_example_details
+                        }
+                        # Use columns to display scenario details side-by-side
+                        cols = st.columns(len(scenarios))
+                        for i, (name, data) in enumerate(scenarios.items()):
+                            with cols[i]:
+                                st.markdown(f"**{name}**")
+                                st.markdown(f"Ending Balance: `${data.get('Result Balance', 'N/A'):,.2f}`")
+                                st.markdown(f"Total Return: `{data.get('Return %', 'N/A'):.2f}%`")
+                                st.markdown(f"Max Drawdown: `{data.get('Maximum Drawdown %', 'N/A'):.2f}%`")
+                                st.markdown(f"Actual Win Rate: `{data.get('Actual Win Rate %', 'N/A'):.2f}%`")
+                                st.markdown(f"Max Cons. Wins: `{data.get('Max Consecutive Wins', 'N/A')}`")
+                                st.markdown(f"Max Cons. Losses: `{data.get('Max Consecutive Losses', 'N/A')}`")
+                        logger.info("Detailed scenario analysis displayed.")
             except Exception as e:
                 # Catch errors specifically during the display of details
-                logger.error(f"Error displaying detailed scenario analysis: {e}", exc_info=True)
-                st.error(f"Error displaying detailed scenario analysis: {e}", icon="🚨")
+                logger.error(f"Error displaying detailed scenario analysis section: {e}", exc_info=True)
+                st.error(f"An error occurred while displaying the detailed scenario analysis. Check logs.", icon="🚨")
 
         # --- Display Distribution Plot ---
         with dist_placeholder.container(): # Use container for the plot
@@ -511,10 +552,10 @@ if run_button:
             try:
                 logger.info("Generating distribution plot...")
                 final_balances = simulator.results.get("final_balances")
-                # Check if final balance data is available
-                if final_balances is None or final_balances.size == 0:
-                    logger.error("Final balances data is missing or empty for distribution plot.")
-                    st.warning("Could not generate distribution plot: Final balances data missing.", icon="⚠️")
+                # Check if final balance data is available and valid
+                if final_balances is None or not isinstance(final_balances, np.ndarray) or final_balances.size == 0:
+                    logger.error(f"Final balances data is missing or invalid for distribution plot. Type: {type(final_balances)}")
+                    st.warning("Could not generate distribution plot: Final balances data missing or invalid. Check logs.", icon="⚠️")
                 else:
                     # Create DataFrame for Plotly
                     final_balances_df = pd.DataFrame(final_balances, columns=['Final Balance'])
@@ -526,30 +567,33 @@ if run_button:
                         template='plotly_dark' # Use a dark theme
                     )
                     fig_hist.update_layout(yaxis_title="Number of Simulations")
-                    # Add vertical lines for median, best, worst if summary exists
-                    if summary:
+                    # Add vertical lines for median, best, worst if summary exists and has valid numbers
+                    if summary and isinstance(summary.get('Median Final Balance'), (int, float)):
                         fig_hist.add_vline(x=summary['Median Final Balance'], line_dash="dash", line_color="yellow", annotation_text="Median")
+                    if summary and isinstance(summary.get('Best Final Balance'), (int, float)):
                         fig_hist.add_vline(x=summary['Best Final Balance'], line_dash="dash", line_color="lightgreen", annotation_text="Best")
-                        fig_hist.add_vline(x=summary['Worst Final Balance'], line_dash="dash", line_color="red", annotation_text="Worst")
+                    if summary and isinstance(summary.get('Worst Final Balance'), (int, float)):
+                         fig_hist.add_vline(x=summary['Worst Final Balance'], line_dash="dash", line_color="red", annotation_text="Worst")
                     # Display the plot in Streamlit
                     st.plotly_chart(fig_hist, use_container_width=True)
                     logger.info("Distribution plot displayed.")
             except Exception as e:
                 # Catch errors during plot generation
                 logger.error(f"Error generating distribution plot: {e}", exc_info=True)
-                st.error(f"Error generating distribution plot: {e}", icon="🚨")
+                st.error(f"An error occurred while generating the distribution plot. Check logs.", icon="🚨")
 
         # --- Display Equity Curve Chart ---
         with chart_placeholder.container(): # Use container for the chart
             st.subheader("Equity Curve Simulation")
             try:
                 logger.info("Generating equity curve plot...")
-                # Retrieve necessary data: median curve and specific path curves
+                # Retrieve necessary data: median curve and specific path curves (ensure details exist)
                 median_equity_curve = simulator.get_median_equity_curve()
-                # Check if data from previous steps (best/worst details) and median curve are available
-                if 'best_details' in locals() and best_details and \
-                   'worst_details' in locals() and worst_details and \
-                   median_equity_curve is not None:
+                best_curve = best_details.get('Monthly Balance Curve') if 'best_details' in locals() and best_details else None
+                worst_curve = worst_details.get('Monthly Balance Curve') if 'worst_details' in locals() and worst_details else None
+
+                # Check if all necessary data is available and valid
+                if best_curve is not None and worst_curve is not None and median_equity_curve is not None:
 
                     months_axis = list(range(simulator.total_months + 1)) # X-axis for the plot
                     max_len = simulator.total_months + 1 # Expected length of curves
@@ -557,39 +601,55 @@ if run_button:
                     # Prepare data dictionary for DataFrame creation
                     plot_data = {'Month': months_axis}
                     curves_to_plot = {
-                        'Best Case Path': best_details.get('Monthly Balance Curve'),
-                        'Worst Case Path': worst_details.get('Monthly Balance Curve'),
+                        'Best Case Path': best_curve,
+                        'Worst Case Path': worst_curve,
                         'Overall Median Path': median_equity_curve # This is already a numpy array or None
                     }
 
                     valid_curves = True # Flag to track if all necessary curves are valid
                     # Validate and process each curve
                     for name, curve in curves_to_plot.items():
+                        # Check if curve is None which indicates previous steps failed or data missing
                         if curve is None:
-                            logger.error(f"Curve data for '{name}' is missing.")
-                            st.warning(f"Could not plot equity curve: Missing data for '{name}'.", icon="⚠️")
+                            logger.error(f"Equity curve plot: Curve data for '{name}' is missing or None.")
+                            st.warning(f"Could not plot equity curve: Missing data for '{name}'. Check logs.", icon="⚠️")
                             valid_curves = False; break # Stop if any curve is missing
+
                         # Ensure curve is a list or numpy array before processing
                         if isinstance(curve, (list, np.ndarray)):
+                             # Convert numpy array to list for consistent processing
+                            if isinstance(curve, np.ndarray):
+                                curve = curve.tolist()
+
                             # Ensure curve has the correct length (pad/truncate if necessary)
-                            processed_curve = list(curve[:max_len]) # Truncate if too long
-                            if len(processed_curve) < max_len: # Pad if too short (e.g., balance went to 0)
-                                logger.warning(f"Curve data for '{name}' has length {len(processed_curve)}, expected {max_len}. Padding with last value.")
+                            processed_curve = curve[:max_len] # Truncate if too long
+                            if len(processed_curve) == 0: # Handle empty curve case
+                                logger.error(f"Equity curve plot: Curve data for '{name}' is empty.")
+                                valid_curves = False; break
+                            if len(processed_curve) < max_len: # Pad if too short (e.g., balance went to 0 early)
+                                logger.warning(f"Equity curve plot: Curve data for '{name}' has length {len(processed_curve)}, expected {max_len}. Padding with last value.")
                                 processed_curve.extend([processed_curve[-1]] * (max_len - len(processed_curve)))
                             plot_data[name] = processed_curve
                         else:
-                            logger.error(f"Curve data for '{name}' is not a list or array, but {type(curve)}.")
-                            st.warning(f"Could not plot equity curve: Invalid data type for '{name}'.", icon="⚠️")
+                            logger.error(f"Equity curve plot: Curve data for '{name}' is not a list or array, but {type(curve)}.")
+                            st.warning(f"Could not plot equity curve: Invalid data type for '{name}'. Check logs.", icon="⚠️")
                             valid_curves = False; break # Stop if data type is wrong
 
-                    # Proceed only if all curves were valid
+                    # Proceed only if all curves were valid and processed
                     if valid_curves:
                         # Create DataFrame from the processed data
-                        df_plot = pd.DataFrame(plot_data)
+                        try:
+                            df_plot = pd.DataFrame(plot_data)
+                        except ValueError as ve:
+                             logger.error(f"Equity curve plot: Error creating DataFrame - {ve}. Data: {plot_data}", exc_info=True)
+                             st.warning("Could not plot equity curve: Error preparing plot data. Check logs.", icon="⚠️")
+                             df_plot = None # Ensure df_plot is None
+
                         # Final check on DataFrame validity
-                        if df_plot.empty or 'Month' not in df_plot.columns or len(df_plot.columns) < 2 :
-                             logger.error("DataFrame for equity curve plot is invalid or empty after processing.")
-                             st.warning("Could not plot equity curve: Failed to prepare plot data.", icon="⚠️")
+                        if df_plot is None or df_plot.empty or 'Month' not in df_plot.columns or len(df_plot.columns) < 2 :
+                             logger.error(f"Equity curve plot: DataFrame is invalid or empty after processing. Columns: {df_plot.columns if df_plot is not None else 'None'}")
+                             if df_plot is not None: # Avoid error if df_plot itself is None
+                                 st.warning("Could not plot equity curve: Failed to prepare plot data correctly. Check logs.", icon="⚠️")
                         else:
                             # Melt DataFrame for Plotly Express line chart
                             df_melted = pd.melt(df_plot, id_vars=['Month'], var_name='Scenario', value_name='Balance ($)')
@@ -619,25 +679,29 @@ if run_button:
                             st.plotly_chart(fig_line, use_container_width=True)
                             logger.info("Equity curve plot displayed.")
                 else:
-                    # Handle case where essential data for the plot is missing
-                    logger.error("Missing necessary data for equity curve plot (median, best, or worst curves).")
-                    st.warning("Could not generate equity curve plot: Missing required data.", icon="⚠️")
+                    # Handle case where essential data for the plot is missing from the start
+                    missing_items = [name for name, curve in [('Best Case Curve', best_curve), ('Worst Case Curve', worst_curve), ('Median Equity Curve', median_equity_curve)] if curve is None]
+                    logger.error(f"Missing necessary data for equity curve plot: {', '.join(missing_items)}")
+                    st.warning(f"Could not generate equity curve plot: Missing required data ({', '.join(missing_items)}). Check logs.", icon="⚠️")
             except Exception as e:
                 # Catch errors during equity curve plot generation
                 logger.error(f"Error generating equity curve plot: {e}", exc_info=True)
-                st.error(f"Error generating equity curve plot: {e}", icon="🚨")
+                st.error(f"An error occurred while generating the equity curve plot. Check logs.", icon="🚨")
 
-    # Catch specific expected errors like invalid inputs
+    # Catch specific expected errors like invalid inputs from __init__
     except ValueError as e:
-        logger.error(f"Input Validation Error: {e}", exc_info=True)
-        st.error(f"Input Error: {e}", icon="🚨")
+        logger.warning(f"Caught ValueError (likely invalid input): {e}", exc_info=True) # Log as warning, as it's user input error
+        st.error(f"Input Error: {e}. Please check the simulation parameters.", icon="🚨")
         info_placeholder.empty() # Clear any status message
-    # Catch any other unexpected errors during the simulation run
+
+    # Catch any other unexpected errors during the simulation run or display logic
     except Exception as e:
-        logger.critical(f"CRITICAL ERROR during simulation execution: {e}", exc_info=True)
-        st.error(f"A critical error occurred during the simulation: {e}", icon="🔥")
+        # Log as CRITICAL because it's an unexpected failure in the main block
+        logger.critical(f"Caught unexpected CRITICAL ERROR during simulation or display: {e}", exc_info=True)
+        # Display a generic but clear error to the user
+        st.error(f"A critical application error occurred. Please check the application logs for details.", icon="🔥")
         info_placeholder.empty() # Clear any status message
-        # st.exception(e) # Optionally uncomment to show full traceback in the Streamlit app for debugging
+
 
 # Display initial message if the simulation hasn't been run yet
 else:
@@ -649,11 +713,13 @@ with st.expander("ℹ️ How this simulation works & Metrics Explained"):
     # --- IMPORTANT ---
     # Use f-string for dynamic values like n_simulations.
     # Double curly braces {{ or }} are needed for literal braces within f-strings.
+    # Safely access simulator attributes only if simulator exists (i.e., after a successful run attempt)
+    total_trades_display = simulator.total_trades if 'simulator' in locals() and hasattr(simulator, 'total_trades') else DEFAULT_CONFIG['trades_per_month']*DEFAULT_CONFIG['total_months']
     explanation_text = f"""
     This tool uses the **Monte Carlo method** to simulate **{DEFAULT_CONFIG['n_simulations']:,}** possible future scenarios for your trading strategy based on the parameters you provide in the sidebar.
 
     **Simulation Process:**
-    1.  **Trade Outcome Generation**: For each of the {DEFAULT_CONFIG['n_simulations']:,} simulation paths, a sequence of {simulator.total_trades if 'simulator' in locals() else DEFAULT_CONFIG['trades_per_month']*DEFAULT_CONFIG['total_months']} trade outcomes (win or loss) is randomly generated based on your input `Win Rate (%)`. This is done efficiently using NumPy.
+    1.  **Trade Outcome Generation**: For each of the {DEFAULT_CONFIG['n_simulations']:,} simulation paths, a sequence of {total_trades_display:,} trade outcomes (win or loss) is randomly generated based on your input `Win Rate (%)`. This is done efficiently using NumPy.
     2.  **Path Simulation**: The simulator then calculates the account balance month-by-month for each path:
         * It starts with your `Initial Balance ($)`.
         * For each simulated trade, it calculates the amount to risk based on the `Risk per Trade (%)` of the *current* balance (this implements compounding).
