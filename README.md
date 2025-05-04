@@ -1,6 +1,13 @@
-# Monte Carlo Simulator
+# Monte Carlo Trading Strategy Simulator
+
+**Powered by Trading Mastery Hub**
 
 This Streamlit application performs Monte Carlo simulations to model potential outcomes of a trading strategy based on user-defined parameters.
+
+## Live Application
+
+You can access the live application here:
+[https://app-monte-carlo-simulator-erztmb9gextnagzqod3wa9.streamlit.app/](https://app-monte-carlo-simulator-erztmb9gextnagzqod3wa9.streamlit.app/)
 
 ## Features
 
