@@ -64,6 +64,47 @@ class MonteCarloSimulator:
         self.results: Dict[str, Any] = {} # Initialize results dictionary
         logger.info("MonteCarloSimulator initialized successfully.")
 
+    # --- Helper Methods ---
+
+    # *** METHOD RESTORED ***
+    def _analyze_trade_outcomes(self, trade_outcomes: np.ndarray) -> Tuple[int, int, float]:
+        """
+        Analyzes a sequence of trade outcomes (wins/losses) for a single path.
+
+        Args:
+            trade_outcomes (np.ndarray): A boolean array where True represents a win, False a loss.
+
+        Returns:
+            Tuple[int, int, float]: A tuple containing:
+                - Maximum consecutive wins.
+                - Maximum consecutive losses.
+                - Actual win rate percentage for this path.
+        """
+        if trade_outcomes.size == 0:
+            return 0, 0, 0.0 # Handle empty array case
+
+        max_wins, max_losses = 0, 0
+        current_wins, current_losses = 0, 0
+        total_wins = 0
+
+        # Iterate through each trade outcome
+        for outcome in trade_outcomes:
+            if outcome: # If it's a win (True)
+                total_wins += 1
+                current_wins += 1
+                current_losses = 0 # Reset loss streak
+                max_wins = max(max_wins, current_wins) # Update max win streak
+            else: # If it's a loss (False)
+                current_losses += 1
+                current_wins = 0 # Reset win streak
+                max_losses = max(max_losses, current_losses) # Update max loss streak
+
+        # Calculate the actual win rate for this specific path
+        actual_win_rate = (total_wins / trade_outcomes.size) * 100 if trade_outcomes.size > 0 else 0.0
+
+        return max_wins, max_losses, actual_win_rate
+    # *** END OF RESTORED METHOD ***
+
     def _calculate_drawdown_details(self, balances: np.ndarray) -> Tuple[float, int]:
         """
         Calculates max drawdown percentage and longest drawdown duration (in months) for a single path.
@@ -83,24 +124,25 @@ class MonteCarloSimulator:
         current_dd_duration = 0
         in_drawdown = False
 
-        for balance in balances[1:]: # Start from the second month's end balance
+        # Iterate through balances starting from the first month-end balance
+        for balance in balances[1:]:
             if balance >= peak:
                 peak = balance
                 if in_drawdown:
                     # Exited drawdown, record duration if it's the longest
                     longest_dd_duration = max(longest_dd_duration, current_dd_duration)
                     in_drawdown = False
-                    current_dd_duration = 0
+                    current_dd_duration = 0 # Reset duration counter
             else:
                 # Calculate drawdown percentage
                 drawdown = (peak - balance) / peak if peak > 0 else 0.0
                 max_drawdown_perc = max(max_drawdown_perc, drawdown)
                 # Track duration
                 if not in_drawdown:
-                    in_drawdown = True
+                    in_drawdown = True # Entered drawdown
                 current_dd_duration += 1
 
-        # If the path ends while in a drawdown, check its duration
+        # If the path ends while still in a drawdown, check its duration
         if in_drawdown:
             longest_dd_duration = max(longest_dd_duration, current_dd_duration)
 
@@ -115,7 +157,8 @@ class MonteCarloSimulator:
         gross_loss = np.abs(np.sum(monthly_changes[monthly_changes < 0]))
 
         if gross_loss == 0:
-            return np.inf if gross_profit > 0 else 1.0 # Avoid division by zero
+            # If no losses, profit factor is infinite if profit > 0, or 1.0 if profit is also 0
+            return np.inf if gross_profit > 0 else 1.0
 
         return gross_profit / gross_loss
 
@@ -144,6 +187,7 @@ class MonteCarloSimulator:
              monthly_balance_history.append(monthly_balance_history[-1])
         return monthly_balance_history[:self.total_months + 1]
 
+    # --- Main Simulation Logic ---
     def run_simulations(self, ruin_threshold_perc: float, profit_target_abs: float) -> None:
         """
         Runs the full suite of Monte Carlo simulations and calculates advanced metrics.
@@ -195,10 +239,10 @@ class MonteCarloSimulator:
                 all_max_drawdowns[i] = max_dd_perc
                 all_longest_dd_durations[i] = longest_dd
 
-                # Check for Ruin
+                # Check for Ruin (any point during the simulation)
                 if np.min(path_balances_np) <= ruin_threshold_value:
                     ruined_count += 1
-                # Check for Target Reached
+                # Check for Target Reached (based on final balance)
                 if final_balances[i] >= profit_target_abs:
                     target_reached_count += 1
 
@@ -233,7 +277,8 @@ class MonteCarloSimulator:
                 median_annualized_return = ((safe_median_final / self.initial_balance)**(1 / years) - 1) * 100
 
             if median_max_drawdown <= 0:
-                 calmar_ratio = np.inf if median_annualized_return > 0 else 0.0 # Handle zero drawdown
+                 # If median drawdown is 0, Calmar is infinite if return > 0, else 0
+                 calmar_ratio = np.inf if median_annualized_return > 0 else 0.0
             else:
                  calmar_ratio = median_annualized_return / median_max_drawdown
 
@@ -260,7 +305,7 @@ class MonteCarloSimulator:
             # --- 5. Store Results ---
             self.results = {
                 "final_balances": final_balances,
-                "all_trade_outcomes": all_trade_outcomes_np, # Keep if needed for detailed path analysis later
+                "all_trade_outcomes": all_trade_outcomes_np, # Keep for detailed path analysis
                 "all_monthly_balances": all_monthly_balances_list, # Raw list for detailed path lookups
                 "all_max_drawdowns": all_max_drawdowns, # Needed for histogram
                 "all_longest_dd_durations": all_longest_dd_durations, # Raw data
@@ -272,7 +317,7 @@ class MonteCarloSimulator:
                 "worst_final_balance": float(final_balances[worst_case_index]),
                 "risk_of_ruin_perc": float(risk_of_ruin),
                 "probability_of_target_perc": float(prob_of_target),
-                "calmar_ratio": float(calmar_ratio) if not math.isnan(calmar_ratio) else 0.0,
+                "calmar_ratio": float(calmar_ratio) if not math.isnan(calmar_ratio) else 0.0, # Store 0 for NaN Calmar
                 "profit_factor_median_path": float(profit_factor) if profit_factor is not None else None,
                 "median_max_drawdown_perc": float(median_max_drawdown),
                 "median_longest_dd_months": int(median_longest_dd),
@@ -288,56 +333,84 @@ class MonteCarloSimulator:
             st_progress_bar.progress(1.0, text="Simulation failed!")
             raise e # Re-raise
 
+    # --- Getter Methods ---
     def get_results_summary(self) -> Optional[Dict[str, float]]:
         """Returns basic summary stats."""
         if not self.results: return None
-        return {
+        # Check if essential keys exist before returning
+        required_keys = ["median_final_balance", "best_final_balance", "worst_final_balance"]
+        if not all(key in self.results for key in required_keys):
+            logger.error(f"Results summary missing required keys. Available: {list(self.results.keys())}")
+            return None
+        summary_data = {
             "Median Final Balance": self.results.get("median_final_balance"),
             "Best Final Balance": self.results.get("best_final_balance"),
             "Worst Final Balance": self.results.get("worst_final_balance")
         }
+        # Check for None values which might indicate issues
+        if None in summary_data.values():
+            logger.warning(f"Results summary contains None values: {summary_data}")
+            # Decide if returning partial data is okay or return None
+            # For now, return None if any key value is None
+            return None
+        return summary_data
+
 
     def get_advanced_metrics(self) -> Optional[Dict[str, Any]]:
          """Returns the calculated advanced metrics."""
          if not self.results: return None
-         # Check for NaN in Calmar Ratio before returning
+         # Check for required keys
+         required_keys = [
+             "risk_of_ruin_perc", "probability_of_target_perc", "calmar_ratio",
+             "profit_factor_median_path", "median_max_drawdown_perc", "median_longest_dd_months"
+         ]
+         if not all(key in self.results for key in required_keys):
+             logger.error(f"Advanced metrics missing required keys. Available: {list(self.results.keys())}")
+             return None
+
+         # Handle potential NaN/inf for display later, but return raw stored value here
          calmar = self.results.get("calmar_ratio")
-         calmar_display = calmar if calmar is not None and not math.isnan(calmar) else "N/A"
+         pf = self.results.get("profit_factor_median_path")
 
          return {
              "Risk of Ruin (%)": self.results.get("risk_of_ruin_perc"),
              "Probability of Target (%)": self.results.get("probability_of_target_perc"),
-             "Calmar Ratio (Simulated)": calmar_display,
-             "Profit Factor (Median Path)": self.results.get("profit_factor_median_path"),
+             "Calmar Ratio (Simulated)": calmar, # Return raw value
+             "Profit Factor (Median Path)": pf, # Return raw value (can be None or inf)
              "Median Max Drawdown (%)": self.results.get("median_max_drawdown_perc"),
              "Median Longest DD (Months)": self.results.get("median_longest_dd_months"),
          }
 
     def get_path_details(self, path_index: int) -> Optional[Dict[str, Any]]:
         """Returns detailed metrics for a specific path, including longest DD."""
+        # Validate path_index and check if results are available
         if not self.results or path_index < 0 or path_index >= self.n_simulations:
             logger.warning(f"Attempted to get details for invalid path index: {path_index}")
             return None
-        if "all_monthly_balances" not in self.results or \
-           "all_max_drawdowns" not in self.results or \
-           "all_longest_dd_durations" not in self.results or \
-           "all_trade_outcomes" not in self.results:
-            logger.error(f"Results dictionary incomplete for path details retrieval (Index: {path_index}).")
+        # Check for necessary data arrays in results
+        required_arrays = ["all_monthly_balances", "all_max_drawdowns", "all_longest_dd_durations", "all_trade_outcomes"]
+        if not all(key in self.results for key in required_arrays):
+            logger.error(f"Results dictionary incomplete for path details retrieval (Index: {path_index}). Missing keys.")
             return None
 
         logger.info(f"Calculating details for path index: {path_index}")
         try:
+            # Retrieve necessary data for the specified path using the index
             path_curve = self.results["all_monthly_balances"][path_index]
-            path_outcomes = self.results["all_trade_outcomes"][path_index] # Assuming this is still needed
-
-            # Use pre-calculated values if available
+            path_outcomes = self.results["all_trade_outcomes"][path_index]
             max_dd = self.results["all_max_drawdowns"][path_index]
             longest_dd = self.results["all_longest_dd_durations"][path_index]
 
-            # Calculate other metrics as before
+            # Check if path_curve is valid
+            if not isinstance(path_curve, list) or len(path_curve) == 0:
+                 logger.error(f"Invalid path curve data for index {path_index}: Type {type(path_curve)}, Length {len(path_curve)}")
+                 return None
+
+            # Calculate other metrics using helper methods or direct calculation
             final_bal = path_curve[-1]
             ret_perc = ((final_bal / self.initial_balance) - 1) * 100 if self.initial_balance > 0 else 0.0
-            max_c_wins, max_c_loss, actual_wr = self._analyze_trade_outcomes(path_outcomes) # Reuse existing method
+            # *** Use the restored method ***
+            max_c_wins, max_c_loss, actual_wr = self._analyze_trade_outcomes(path_outcomes)
 
             details = {
                 "Result Balance": final_bal,
@@ -355,14 +428,16 @@ class MonteCarloSimulator:
             logger.error(f"IndexError calculating details for path index {path_index}. Results arrays might be inconsistent.", exc_info=True)
             return None
         except Exception as e:
+            # Catch any other unexpected error during path detail calculation
             logger.error(f"Unexpected error calculating details for path index {path_index}: {e}", exc_info=True)
             return None
 
-    # Add getters for percentile curves and drawdown distribution if needed outside main logic
     def get_percentile_curves_data(self) -> Optional[Dict[int, np.ndarray]]:
+        """Gets the pre-calculated percentile curves data."""
         return self.results.get("percentile_curves")
 
     def get_drawdown_distribution_data(self) -> Optional[np.ndarray]:
+        """Gets the pre-calculated array of maximum drawdowns for all paths."""
         return self.results.get("all_max_drawdowns")
 
     def get_median_equity_curve(self) -> Optional[np.ndarray]:
@@ -409,8 +484,10 @@ with st.sidebar:
         "Ruin Threshold (% of Initial Balance)", min_value=0.0, max_value=100.0, value=DEFAULT_CONFIG["default_ruin_threshold_perc"], step=1.0, format="%.1f",
         help="Account balance level (as % of start) considered 'ruin'. Used for Risk of Ruin calculation."
     )
+    # Ensure profit target default is calculated based on current initial balance input
+    profit_target_default = initial_balance_input * (1 + DEFAULT_CONFIG["default_profit_target_perc"] / 100.0)
     profit_target_input = st.number_input(
-        "Profit Target ($)", min_value=float(initial_balance_input), value=initial_balance_input * (1 + DEFAULT_CONFIG["default_profit_target_perc"] / 100.0), step=100.0,
+        "Profit Target ($)", min_value=float(initial_balance_input), value=float(profit_target_default), step=100.0, format="%.2f",
         help="Absolute account balance target. Used for Probability of Reaching Target calculation."
     )
 
@@ -446,7 +523,8 @@ if run_button:
 
         # --- Display Overall Summary ---
         summary = simulator.get_results_summary()
-        if summary and None not in summary.values():
+        # Check if summary is not None and contains valid numbers
+        if summary and all(isinstance(v, (int, float)) for v in summary.values()):
             with summary_placeholder.container():
                 st.subheader("Overall Simulation Summary")
                 col1, col2, col3 = st.columns(3)
@@ -455,34 +533,39 @@ if run_button:
                 col3.metric("Worst Final Balance", f"${summary['Worst Final Balance']:,.2f}")
             logger.info("Overall summary displayed.")
         else:
-             logger.error("Failed to retrieve valid simulation summary.")
+             logger.error(f"Failed to retrieve valid simulation summary: {summary}")
              summary_placeholder.error("Error: Could not retrieve simulation summary. Check logs.", icon="⚠️")
-             st.stop()
+             st.stop() # Stop if basic summary fails
 
         # --- Display Advanced Metrics ---
         adv_metrics = simulator.get_advanced_metrics()
-        if adv_metrics and None not in adv_metrics.values():
+        # Check if adv_metrics is not None before proceeding
+        if adv_metrics:
              with adv_metrics_placeholder.container():
                   st.subheader("Advanced Risk & Performance Metrics")
-                  cols = st.columns(3)
-                  cols[0].metric("Risk of Ruin", f"{adv_metrics['Risk of Ruin (%)']:.2f}%", help=f"Chance balance dropped below {ruin_threshold_input}% of initial capital.")
-                  cols[1].metric("Prob. of Reaching Target", f"{adv_metrics['Probability of Target (%)']:.2f}%", help=f"Chance final balance reached ${profit_target_input:,.0f}.")
-                  # Handle potential "N/A" or inf for Calmar/Profit Factor
-                  calmar_val = adv_metrics['Calmar Ratio (Simulated)']
-                  calmar_disp = f"{calmar_val:.2f}" if isinstance(calmar_val, (int, float)) else str(calmar_val)
-                  cols[2].metric("Calmar Ratio (Sim.)", calmar_disp, help="Median Annualized Return / Median Max Drawdown %.")
+                  cols = st.columns(3) # First row
+                  # Helper function for safe formatting
+                  def format_metric(value, precision=2, suffix="%"):
+                      if value is None: return "N/A"
+                      if isinstance(value, (int, float)):
+                          if math.isinf(value): return "inf"
+                          if math.isnan(value): return "N/A"
+                          return f"{value:,.{precision}f}{suffix}"
+                      return str(value) # Fallback for unexpected types
 
-                  cols = st.columns(3) # New row for other metrics
-                  pf_val = adv_metrics['Profit Factor (Median Path)']
-                  pf_disp = f"{pf_val:.2f}" if pf_val is not None else "N/A"
-                  cols[0].metric("Profit Factor (Median Path)", pf_disp, help="Gross Profit / Gross Loss for the median outcome path.")
-                  cols[1].metric("Median Max Drawdown", f"{adv_metrics['Median Max Drawdown (%)']:.2f}%", help="Median of the maximum drawdowns experienced across all paths.")
-                  cols[2].metric("Median Longest DD", f"{adv_metrics['Median Longest DD (Months)']:.0f} Months", help="Median duration (months) spent below an equity peak across all paths.")
+                  cols[0].metric("Risk of Ruin", format_metric(adv_metrics.get('Risk of Ruin (%)')), help=f"Chance balance dropped below {ruin_threshold_input}% of initial capital.")
+                  cols[1].metric("Prob. of Reaching Target", format_metric(adv_metrics.get('Probability of Target (%)')), help=f"Chance final balance reached ${profit_target_input:,.0f}.")
+                  cols[2].metric("Calmar Ratio (Sim.)", format_metric(adv_metrics.get('Calmar Ratio (Simulated)'), suffix=""), help="Median Annualized Return / Median Max Drawdown %.")
+
+                  cols = st.columns(3) # Second row
+                  cols[0].metric("Profit Factor (Median Path)", format_metric(adv_metrics.get('Profit Factor (Median Path)'), suffix=""), help="Gross Profit / Gross Loss for the median outcome path.")
+                  cols[1].metric("Median Max Drawdown", format_metric(adv_metrics.get('Median Max Drawdown (%)')), help="Median of the maximum drawdowns experienced across all paths.")
+                  cols[2].metric("Median Longest DD", format_metric(adv_metrics.get('Median Longest DD (Months)'), precision=0, suffix=" Months"), help="Median duration (months) spent below an equity peak across all paths.")
 
              logger.info("Advanced metrics displayed.")
         else:
-             logger.error(f"Failed to retrieve valid advanced metrics: {adv_metrics}")
-             adv_metrics_placeholder.warning("Could not display some advanced metrics. Check logs.", icon="⚠️")
+             logger.error(f"Failed to retrieve valid advanced metrics dict: {adv_metrics}")
+             adv_metrics_placeholder.warning("Could not display advanced metrics. Check logs.", icon="⚠️")
 
 
         # --- Display Detailed Scenario Analysis (Updated) ---
@@ -494,35 +577,64 @@ if run_button:
                 worst_idx = simulator.results.get("worst_case_index")
                 median_idx = simulator.results.get("median_case_index")
 
+                # Check if indices were found
                 if best_idx is None or worst_idx is None or median_idx is None:
                      logger.error("Could not find best/worst/median indices in sim results for detailed analysis.")
                      st.error("Error: Could not identify key simulation paths. Check logs.", icon="⚠️")
+                     # Set details to None to prevent errors below
+                     best_details, worst_details, median_example_details = None, None, None
                 else:
+                    # Attempt to get details for each path
                     best_details = simulator.get_path_details(best_idx)
                     worst_details = simulator.get_path_details(worst_idx)
                     median_example_details = simulator.get_path_details(median_idx)
 
-                    if not all([best_details, worst_details, median_example_details]):
-                        logger.error("Failed to retrieve one or more detailed path metrics.")
-                        st.error("Error: Could not retrieve all detailed path metrics. Check logs.", icon="⚠️")
-                    else:
-                        scenarios = {"Best Case Path": best_details, "Worst Case Path": worst_details, "Median Case Path (Example)": median_example_details}
-                        cols = st.columns(len(scenarios))
-                        for i, (name, data) in enumerate(scenarios.items()):
-                            with cols[i]:
-                                st.markdown(f"**{name}**")
-                                st.markdown(f"Ending Balance: `${data.get('Result Balance', 'N/A'):,.2f}`")
-                                st.markdown(f"Total Return: `{data.get('Return %', 'N/A'):.2f}%`")
-                                st.markdown(f"Max Drawdown: `{data.get('Maximum Drawdown %', 'N/A'):.2f}%`")
-                                # Added Longest Drawdown Duration here
-                                st.markdown(f"Longest DD: `{data.get('Longest Drawdown Duration (Months)', 'N/A')} Months`")
-                                st.markdown(f"Actual Win Rate: `{data.get('Actual Win Rate %', 'N/A'):.2f}%`")
-                                st.markdown(f"Max Cons. Wins: `{data.get('Max Consecutive Wins', 'N/A')}`")
-                                st.markdown(f"Max Cons. Losses: `{data.get('Max Consecutive Losses', 'N/A')}`")
-                        logger.info("Detailed scenario analysis (updated) displayed.")
+                # Now check if the details were successfully retrieved
+                if not all([best_details, worst_details, median_example_details]):
+                    logger.error("Failed to retrieve one or more detailed path metrics (best, worst, or median).")
+                    # Display error but don't stop the whole app
+                    st.error("Error: Could not retrieve all detailed path metrics. Some scenarios might be missing. Check logs.", icon="⚠️")
+                    # Attempt to display what we have
+                    scenarios = {
+                        "Best Case Path": best_details,
+                        "Worst Case Path": worst_details,
+                        "Median Case Path (Example)": median_example_details
+                    }
+                    cols = st.columns(len(scenarios))
+                    for i, (name, data) in enumerate(scenarios.items()):
+                         with cols[i]:
+                              st.markdown(f"**{name}**")
+                              if data: # Check if data exists for this scenario
+                                   st.markdown(f"Ending Balance: `${data.get('Result Balance', 'N/A'):,.2f}`")
+                                   st.markdown(f"Total Return: `{data.get('Return %', 'N/A'):.2f}%`")
+                                   st.markdown(f"Max Drawdown: `{data.get('Maximum Drawdown %', 'N/A'):.2f}%`")
+                                   st.markdown(f"Longest DD: `{data.get('Longest Drawdown Duration (Months)', 'N/A')} Months`")
+                                   st.markdown(f"Actual Win Rate: `{data.get('Actual Win Rate %', 'N/A'):.2f}%`")
+                                   st.markdown(f"Max Cons. Wins: `{data.get('Max Consecutive Wins', 'N/A')}`")
+                                   st.markdown(f"Max Cons. Losses: `{data.get('Max Consecutive Losses', 'N/A')}`")
+                              else:
+                                   st.markdown("*Data unavailable*")
+
+                else:
+                    # All details retrieved successfully
+                    scenarios = {"Best Case Path": best_details, "Worst Case Path": worst_details, "Median Case Path (Example)": median_example_details}
+                    cols = st.columns(len(scenarios))
+                    for i, (name, data) in enumerate(scenarios.items()):
+                        with cols[i]:
+                            st.markdown(f"**{name}**")
+                            st.markdown(f"Ending Balance: `${data.get('Result Balance', 'N/A'):,.2f}`")
+                            st.markdown(f"Total Return: `{data.get('Return %', 'N/A'):.2f}%`")
+                            st.markdown(f"Max Drawdown: `{data.get('Maximum Drawdown %', 'N/A'):.2f}%`")
+                            st.markdown(f"Longest DD: `{data.get('Longest Drawdown Duration (Months)', 'N/A')} Months`")
+                            st.markdown(f"Actual Win Rate: `{data.get('Actual Win Rate %', 'N/A'):.2f}%`")
+                            st.markdown(f"Max Cons. Wins: `{data.get('Max Consecutive Wins', 'N/A')}`")
+                            st.markdown(f"Max Cons. Losses: `{data.get('Max Consecutive Losses', 'N/A')}`")
+                    logger.info("Detailed scenario analysis (updated) displayed.")
             except Exception as e:
+                # Catch any unexpected error during the display logic for this section
                 logger.error(f"Error displaying detailed scenario analysis section: {e}", exc_info=True)
                 st.error(f"An error occurred displaying detailed scenario analysis. Check logs.", icon="🚨")
+
 
         # --- Display Distribution Plots (Final Balance & Max Drawdown) ---
         with dist_placeholder:
@@ -544,6 +656,7 @@ if run_button:
                                  labels={'Final Balance': 'Final Account Balance ($)'}, template='plotly_dark'
                             )
                             fig_hist_balance.update_layout(yaxis_title="Simulations Count", bargap=0.1)
+                            # Add median line only if summary is valid
                             if summary and isinstance(summary.get('Median Final Balance'), (int, float)):
                                  fig_hist_balance.add_vline(x=summary['Median Final Balance'], line_dash="dash", line_color="yellow", annotation_text="Median")
                             st.plotly_chart(fig_hist_balance, use_container_width=True)
@@ -562,11 +675,14 @@ if run_button:
                             st.warning("Max drawdown distribution unavailable.", icon="⚠️")
                        else:
                             df_dds = pd.DataFrame(all_dds, columns=['Max Drawdown %'])
+                            # Filter out potential inf values if any (though unlikely for drawdown)
+                            df_dds = df_dds[np.isfinite(df_dds['Max Drawdown %'])]
                             fig_hist_dd = px.histogram(
                                  df_dds, x='Max Drawdown %', nbins=75, title='Maximum Drawdowns',
                                  labels={'Max Drawdown %': 'Maximum Drawdown (%)'}, template='plotly_dark'
                             )
                             fig_hist_dd.update_layout(yaxis_title="Simulations Count", bargap=0.1)
+                            # Add median line only if adv_metrics is valid
                             median_dd = adv_metrics.get('Median Max Drawdown (%)') if adv_metrics else None
                             if median_dd is not None and isinstance(median_dd, (int, float)):
                                  fig_hist_dd.add_vline(x=median_dd, line_dash="dash", line_color="orange", annotation_text="Median DD")
@@ -584,41 +700,50 @@ if run_button:
                 logger.info("Generating equity curve plot with percentiles...")
                 median_curve = simulator.get_median_equity_curve()
                 percentile_data = simulator.get_percentile_curves_data()
-                best_curve_data = best_details.get('Monthly Balance Curve') if 'best_details' in locals() and best_details else None
-                worst_curve_data = worst_details.get('Monthly Balance Curve') if 'worst_details' in locals() and worst_details else None
+                # Retrieve best/worst details again safely
+                best_details_local = simulator.get_path_details(simulator.results.get("best_case_index")) if simulator.results.get("best_case_index") is not None else None
+                worst_details_local = simulator.get_path_details(simulator.results.get("worst_case_index")) if simulator.results.get("worst_case_index") is not None else None
+                best_curve_data = best_details_local.get('Monthly Balance Curve') if best_details_local else None
+                worst_curve_data = worst_details_local.get('Monthly Balance Curve') if worst_details_local else None
 
-                # Check if essential data is available
+                # Check if essential data is available and valid
                 if median_curve is not None and median_curve.size > 0 and \
-                   percentile_data and \
-                   best_curve_data is not None and worst_curve_data is not None:
+                   percentile_data and isinstance(percentile_data, dict) and \
+                   best_curve_data is not None and isinstance(best_curve_data, list) and \
+                   worst_curve_data is not None and isinstance(worst_curve_data, list):
 
                     months_axis = list(range(simulator.total_months + 1))
                     fig_line = go.Figure()
 
-                    # Add percentile bands (plot in reverse order for layering)
-                    p_upper_outer = 90
-                    p_upper_inner = 75
-                    p_lower_inner = 25
-                    p_lower_outer = 10
+                    # Define percentiles for bands
+                    p_upper_outer, p_upper_inner = 90, 75
+                    p_lower_inner, p_lower_outer = 25, 10
 
-                    # Outer band (e.g., 10-90)
-                    fig_line.add_trace(go.Scatter(
-                        x=months_axis, y=percentile_data[p_upper_outer], fill=None, mode='lines',
-                        line_color='rgba(0,100,80,0.2)', name=f'{p_upper_outer}th Percentile'
-                    ))
-                    fig_line.add_trace(go.Scatter(
-                        x=months_axis, y=percentile_data[p_lower_outer], fill='tonexty', mode='lines', # Fill to 90th
-                        line_color='rgba(0,100,80,0.2)', name=f'{p_lower_outer}th-{p_upper_outer}th Band'
-                    ))
-                     # Inner band (e.g., 25-75)
-                    fig_line.add_trace(go.Scatter(
-                        x=months_axis, y=percentile_data[p_upper_inner], fill=None, mode='lines',
-                        line_color='rgba(0,176,246,0.2)', name=f'{p_upper_inner}th Percentile'
-                    ))
-                    fig_line.add_trace(go.Scatter(
-                        x=months_axis, y=percentile_data[p_lower_inner], fill='tonexty', mode='lines', # Fill to 75th
-                        line_color='rgba(0,176,246,0.2)', name=f'{p_lower_inner}th-{p_upper_inner}th Band'
-                    ))
+                    # Check if all required percentile keys exist
+                    required_percentiles = [p_lower_outer, p_lower_inner, p_upper_inner, p_upper_outer]
+                    if not all(p in percentile_data for p in required_percentiles):
+                         logger.error(f"Missing required percentile data keys for plotting bands. Available: {list(percentile_data.keys())}")
+                         st.warning("Could not plot percentile bands: Missing data. Check logs.", icon="⚠️")
+                    else:
+                        # Add percentile bands (plot in reverse order for layering)
+                        # Outer band (10-90)
+                        fig_line.add_trace(go.Scatter(
+                            x=months_axis, y=percentile_data[p_upper_outer], fill=None, mode='lines',
+                            line_color='rgba(0,100,80,0.2)', name=f'{p_upper_outer}th Percentile', showlegend=False
+                        ))
+                        fig_line.add_trace(go.Scatter(
+                            x=months_axis, y=percentile_data[p_lower_outer], fill='tonexty', mode='lines', # Fill to 90th
+                            line_color='rgba(0,100,80,0.2)', name=f'{p_lower_outer}th-{p_upper_outer}th Band'
+                        ))
+                        # Inner band (25-75)
+                        fig_line.add_trace(go.Scatter(
+                            x=months_axis, y=percentile_data[p_upper_inner], fill=None, mode='lines',
+                            line_color='rgba(0,176,246,0.2)', name=f'{p_upper_inner}th Percentile', showlegend=False
+                        ))
+                        fig_line.add_trace(go.Scatter(
+                            x=months_axis, y=percentile_data[p_lower_inner], fill='tonexty', mode='lines', # Fill to 75th
+                            line_color='rgba(0,176,246,0.2)', name=f'{p_lower_inner}th-{p_upper_inner}th Band'
+                        ))
 
                     # Add Median, Best, Worst lines on top
                     fig_line.add_trace(go.Scatter(
@@ -640,7 +765,8 @@ if run_button:
                     st.plotly_chart(fig_line, use_container_width=True)
                     logger.info("Equity curve plot with percentiles displayed.")
                 else:
-                    missing = [k for k, v in {'Median': median_curve, 'Percentiles': percentile_data, 'Best': best_curve_data, 'Worst': worst_curve_data}.items() if v is None or (isinstance(v, np.ndarray) and v.size==0)]
+                    # Log which specific data was missing
+                    missing = [k for k, v in {'Median Curve': median_curve, 'Percentile Data': percentile_data, 'Best Curve': best_curve_data, 'Worst Curve': worst_curve_data}.items() if v is None or (isinstance(v, np.ndarray) and v.size==0) or (isinstance(v, dict) and not v)]
                     logger.error(f"Missing necessary data for percentile equity curve plot: {missing}")
                     st.warning(f"Could not generate equity curve plot: Missing required data ({', '.join(missing)}). Check logs.", icon="⚠️")
             except Exception as e:
@@ -663,8 +789,43 @@ else:
 
 # --- Explanation Section ---
 with st.expander("ℹ️ How this simulation works & Metrics Explained (Advanced)"):
-    # (Explanation text would be updated here to include descriptions of the new metrics:
-    # RoR, Prob. Target, Calmar, Profit Factor, Longest DD, Percentile Bands, DD Distribution)
-    # ... [omitted for brevity, but should be updated] ...
-    st.markdown("*(Explanation section needs updating for new metrics)*")
+    # Safely access simulator attributes only if simulator exists
+    total_trades_display = simulator.total_trades if 'simulator' in locals() and hasattr(simulator, 'total_trades') else DEFAULT_CONFIG['trades_per_month']*DEFAULT_CONFIG['total_months']
+    explanation_text = f"""
+    This tool uses the **Monte Carlo method** to simulate **{DEFAULT_CONFIG['n_simulations']:,}** possible future scenarios for your trading strategy based on the parameters provided.
 
+    **Simulation Process:**
+    1.  **Trade Outcome Generation**: Generates {total_trades_display:,} random win/loss outcomes for each of the {DEFAULT_CONFIG['n_simulations']:,} paths based on `Win Rate (%)`.
+    2.  **Path Simulation**: Calculates the month-by-month balance for each path, applying `Risk per Trade (%)` (compounded) and `Risk-Reward Ratio`. Trading stops if balance hits zero.
+    3.  **Results Analysis**: Analyzes all simulated paths to calculate summary statistics, distributions, and advanced metrics.
+
+    **Overall Simulation Summary:**
+    * **Median/Best/Worst Final Balance**: The 50th percentile, highest, and lowest ending balances across all simulations.
+
+    **Advanced Risk & Performance Metrics:**
+    * **Risk of Ruin (%)**: The percentage of simulations where the balance dropped below the specified `Ruin Threshold (%)` of the initial capital *at any point*.
+    * **Prob. of Reaching Target (%)**: The percentage of simulations where the *final* balance met or exceeded the specified `Profit Target ($)`.
+    * **Calmar Ratio (Simulated)**: Median Annualized Return / Median Max Drawdown %. Higher is generally better risk-adjusted return. Calculated based on median outcomes across all simulations. (Annualized Return = `((Median Final / Initial)^(1 / Years) - 1) * 100`).
+    * **Profit Factor (Median Path)**: Gross Profit / Gross Loss for the specific simulation path that ended closest to the overall median final balance. Values > 1 indicate profitability.
+    * **Median Max Drawdown (%)**: The 50th percentile of the maximum drawdown percentages experienced in each individual simulation path. Represents a typical worst drawdown.
+    * **Median Longest DD (Months)**: The 50th percentile of the longest duration (in months) spent below a previous equity peak in each individual simulation path. Indicates typical time recovery.
+
+    **Distributions:**
+    * **Final Balances Histogram**: Shows the frequency of different final balance outcomes.
+    * **Maximum Drawdowns Histogram**: Shows the frequency of different maximum drawdown percentages experienced across all paths.
+
+    **Detailed Scenario Analysis (Based on Specific Paths):**
+    * Analyzes the specific paths ending with the **Best**, **Worst**, and **Median** final balances.
+    * **Ending Balance, Total Return %, Max Drawdown %**: Metrics for that *single* path.
+    * **Longest DD (Months)**: The longest time (in months) that *specific* path spent below an equity peak.
+    * **Actual Win Rate %, Max Cons. Wins/Losses**: Observed metrics *within that specific path*.
+
+    **Equity Curve Chart (with Percentile Bands):**
+    * Visualizes balance progression over time.
+    * **Best/Worst Case Path**: Actual balance paths from the simulations ending highest/lowest.
+    * **Median Path (dashed line)**: The median balance across *all* simulations at *each month*.
+    * **Percentile Bands (e.g., 10th-90th, 25th-75th)**: Shaded areas showing the range within which a certain percentage of simulation paths fell at each month. Provides a view of outcome variability over time.
+
+    **Disclaimer**: Simulations use assumptions. Real trading involves complexities (costs, slippage, market changes, psychology). Use for education, not prediction.
+    """
+    st.markdown(explanation_text)
