@@ -377,15 +377,16 @@ class MonteCarloSimulator:
 
 # Configure Streamlit page settings
 st.set_page_config(
-    page_title="Trading Monte Carlo Simulator",
+    page_title="Monte Carlo Simulator", # Updated page title
     page_icon="📊",
     layout="wide", # Use wide layout for better chart display
     initial_sidebar_state="expanded" # Keep sidebar open by default
 )
 
-# Main title and caption
-st.title("📊 Monte Carlo Trading Strategy Simulator")
-st.caption("Simulate potential trading outcomes based on your strategy parameters.")
+# Main title and branding subtitle
+st.title("Monte Carlo Simulator") # Updated title
+st.caption("Powered by Trading Mastery Hub") # Added branding subtitle
+# st.caption("Simulate potential trading outcomes based on your strategy parameters.") # Original caption commented out or removed
 
 # --- Simulation Parameters (Sidebar Inputs) ---
 # Use sidebar for input parameters
