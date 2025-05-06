@@ -1,4 +1,4 @@
-# Monte Carlo Trading Strategy Simulator
+# Monte Carlo Simulator
 
 **Powered by Trading Mastery Hub**
 
